@@ -1,7 +1,14 @@
-[[nodiscard]] auto& get_iddb()
+auto get_offset2ID()
 {
-	static REL::Offset2ID iddb;
-	return iddb;
+	auto offset2ID = REL::Offset2ID::GetSingleton();
+	static std::once_flag once;
+	std::call_once(once,
+		[&]()
+		{
+			offset2ID->load_v5();
+			REX::INFO("Loaded...");
+		});
+	return offset2ID;
 }
 
 class VTable
@@ -26,27 +33,20 @@ public:
 	}
 
 	[[nodiscard]] reference operator[](std::size_t a_idx) noexcept { return _vtables[a_idx]; }
-
 	[[nodiscard]] const_reference operator[](std::size_t a_idx) const noexcept { return _vtables[a_idx]; }
-
 	[[nodiscard]] iterator begin() noexcept { return _vtables.begin(); }
-
 	[[nodiscard]] const_iterator begin() const noexcept { return _vtables.begin(); }
-
 	[[nodiscard]] const_iterator cbegin() const noexcept { return _vtables.cbegin(); }
-
 	[[nodiscard]] iterator end() noexcept { return _vtables.end(); }
-
 	[[nodiscard]] const_iterator end() const noexcept { return _vtables.end(); }
-
 	[[nodiscard]] const_iterator cend() const noexcept { return _vtables.cend(); }
-
 	[[nodiscard]] size_type size() const noexcept { return _vtables.size(); }
 
 private:
 	[[nodiscard]] static const RE::RTTI::TypeDescriptor* type_descriptor(std::string_view a_name)
 	{
-		const auto segment = REL::Module::get().segment(REL::Segment::data);
+		const auto      mod = REL::Module::GetSingleton();
+		const auto      segment = mod->segment(REL::Segment::data);
 		const std::span haystack{ segment.pointer<const char>(), segment.size() };
 
 		std::boyer_moore_horspool_searcher searcher(a_name.cbegin(), a_name.cend());
@@ -66,11 +66,11 @@ private:
 	{
 		assert(a_typeDesc != nullptr);
 
-		const auto& mod = REL::Module::get();
+		const auto mod = REL::Module::GetSingleton();
 		const auto typeDesc = reinterpret_cast<std::uintptr_t>(a_typeDesc);
-		const auto rva = static_cast<std::uint32_t>(typeDesc - mod.base());
+		const auto rva = static_cast<std::uint32_t>(typeDesc - mod->base());
 
-		const auto segment = mod.segment(REL::Segment::rdata);
+		const auto segment = mod->segment(REL::Segment::rdata);
 		const auto base = segment.pointer<const std::byte>();
 		const auto start = reinterpret_cast<const std::uint32_t*>(base);
 		const auto end = reinterpret_cast<const std::uint32_t*>(base + segment.size());
@@ -102,7 +102,8 @@ private:
 		assert(std::all_of(a_cols.begin(), a_cols.end(), [](auto&& a_elem) noexcept
 		                   { return a_elem != nullptr; }));
 
-		const auto segment = REL::Module::get().segment(REL::Segment::rdata);
+		const auto mod = REL::Module::GetSingleton();
+		const auto segment = mod->segment(REL::Segment::rdata);
 		const auto base = segment.pointer<const std::byte>();
 		const auto start = reinterpret_cast<const std::uintptr_t*>(base);
 		const auto end = reinterpret_cast<const std::uintptr_t*>(base + segment.size());
@@ -182,7 +183,7 @@ private:
 	std::array<char, 0x1000> buf;
 	const auto len =
 		REX::W32::UnDecorateSymbolName(
-			a_typeDesc->raw_name() + 1,
+			a_typeDesc->mangled_name() + 1,
 			buf.data(),
 			static_cast<std::uint32_t>(buf.size()),
 			(REX::W32::UNDNAME_NO_MS_KEYWORDS) |
@@ -224,12 +225,13 @@ void dump_rtti()
 	std::vector<std::tuple<std::string, std::uint64_t, std::vector<std::uint64_t>>> results;  // [ demangled name, rtti id, vtable ids ]
 
 	VTable typeInfo(".?AVtype_info@@"sv);
-	const auto& mod = REL::Module::get();
-	const auto baseAddr = mod.base();
-	const auto data = mod.segment(REL::Segment::data);
+	const auto mod = REL::Module::GetSingleton();
+	const auto baseAddr = mod->base();
+	const auto data = mod->segment(REL::Segment::data);
 	const auto beg = data.pointer<const std::uintptr_t>();
 	const auto end = reinterpret_cast<const std::uintptr_t*>(data.address() + data.size());
-	// const auto& iddb = get_iddb();
+	const auto offset2ID = get_offset2ID();
+
 	for (auto iter = beg; iter < end; ++iter)
 	{
 		if (*iter == typeInfo[0].address())
@@ -238,8 +240,7 @@ void dump_rtti()
 			try
 			{
 				auto name = decode_name(typeDescriptor);
-				// const auto rid = iddb(reinterpret_cast<std::uintptr_t>(iter) - baseAddr);
-				const auto rid = reinterpret_cast<std::uintptr_t>(iter) - baseAddr;
+				const auto rid = offset2ID->operator()(reinterpret_cast<std::uintptr_t>(iter) - baseAddr);
 
 				VTable vtable{ typeDescriptor };
 				std::vector<std::uint64_t> vids(vtable.size());
@@ -248,8 +249,7 @@ void dump_rtti()
 					vtable.end(),
 					vids.begin(),
 					[&](auto&& a_elem)
-					// { return iddb(a_elem.offset()); });
-					{ return a_elem.offset(); });
+					{ return offset2ID->operator()(a_elem.offset()); });
 
 				results.emplace_back(sanitize_name(std::move(name)), rid, std::move(vids));
 			}
@@ -275,7 +275,8 @@ void dump_rtti()
 	std::ofstream file;
 	const auto openf = [&](std::string_view a_name)
 	{
-		file.open(a_name.data() + "_IDs.h"s);
+		const auto name = std::vformat("IDs_{}.h"sv, std::make_format_args(a_name));
+		file.open(name);
 		file << "#pragma once\n"sv
 			 << "\n"sv
 			 << "namespace RE\n"sv
@@ -294,14 +295,14 @@ void dump_rtti()
 	for (const auto& [name, rid, vids] : results)
 	{
 		(void)vids;
-		file << "\t\tinline constexpr REL::Offset "sv << name << "{ "sv << rid << " };\n"sv;
+		file << "\t\tinline constexpr REL::ID "sv << name << "{ "sv << rid << " };\n"sv;
 	}
 	closef();
 
 	openf("VTABLE"sv);
 	const auto printVID = [&](std::uint64_t a_vid)
 	{
-		file << "REL::Offset("sv << a_vid << ")"sv;
+		file << "REL::ID("sv << a_vid << ")"sv;
 	};
 	for (const auto& [name, rid, vids] : results)
 	{
@@ -309,7 +310,7 @@ void dump_rtti()
 		const std::span svids{ vids.data(), vids.size() };
 		if (!svids.empty())
 		{
-			file << "\t\tinline constexpr std::array<REL::Offset, "sv
+			file << "\t\tinline constexpr std::array<REL::ID, "sv
 				 << vids.size()
 				 << "> "sv
 				 << name
@@ -326,27 +327,22 @@ void dump_rtti()
 	closef();
 }
 
+/*
 void dump_nirtti()
 {
 	constexpr std::array seeds = {
-		0x94B79A0,  // NiObject
-		0x94C72F8,  // NiShader
-		0x94C9330,  // BSFaceGenMorphData
-		0x94C95A8,  // BSTempEffect
-		0x94C40F0,  // bhkCharacterProxy
-		0x94B5640,  // bhkWorld
-		0x94C6238,  // bhkWorldM
+		0,  // NiObject
 	};
 	std::unordered_set<std::uintptr_t> results;
 	results.reserve(seeds.size());
 	for (const auto& seed : seeds)
 	{
-		results.insert(REL::Offset(seed).address());
+		results.insert(REL::ID(seed).address());
 	}
 
-	const auto& mod = REL::Module::get();
-	const auto base = mod.base();
-	const auto segment = mod.segment(REL::Segment::data);
+	const auto mod = REL::Module::GetSingleton();
+	const auto base = mod->base();
+	const auto segment = mod->segment(REL::Segment::data);
 	const auto beg = segment.pointer<const std::uintptr_t>();
 	const auto end = reinterpret_cast<const std::uintptr_t*>(segment.address() + segment.size());
 	bool found = false;
@@ -368,14 +364,13 @@ void dump_nirtti()
 	while (found);
 
 	std::vector<std::pair<std::string, std::uint64_t>> toPrint;
-	// const auto& iddb = get_iddb();
+	const auto offset2ID = get_offset2ID();
 	for (const auto& result : results)
 	{
 		const auto rtti = reinterpret_cast<const RE::NiRTTI*>(result);
 		try
 		{
-			//const auto id = iddb(result - base);
-			const auto id = (result - base);
+			const auto id = offset2ID->operator()(result - base);
 			toPrint.emplace_back(sanitize_name(rtti->GetName()), id);
 		}
 		catch (const std::exception&)
@@ -391,7 +386,7 @@ void dump_nirtti()
 	};
 	std::sort(toPrint.begin(), toPrint.end(), comp);
 
-	std::ofstream output("NiRTTI_IDs.h");
+	std::ofstream output("IDs_NiRTTI.h");
 	output << "#pragma once\n"sv
 		   << "\n"sv
 		   << "namespace RE\n"sv
@@ -400,25 +395,26 @@ void dump_nirtti()
 		   << "\t{\n"sv;
 	for (const auto& elem : toPrint)
 	{
-		output << "\t\tinline constexpr REL::Offset "sv << elem.first << "{ "sv << elem.second << " };\n"sv;
+		output << "\t\tinline constexpr REL::ID "sv << elem.first << "{ "sv << elem.second << " };\n"sv;
 	}
 	output << "\t}\n"sv
 		   << "}\n"sv;
 }
+*/
 
 namespace
 {
-	void MessageHandler(OBSE::MessagingInterface::Message* a_msg)
+	void MessageHandler(SFSE::MessagingInterface::Message* a_msg)
 	{
 		switch (a_msg->type)
 		{
-		case OBSE::MessagingInterface::kPostLoad:
+		case SFSE::MessagingInterface::kPostPostDataLoad:
 			try
 			{
 				dump_rtti();
-				dump_nirtti();
+				// dump_nirtti();
 
-				OBSE::stl::report_and_fail("Done!");
+				REX::FAIL("Done!");
 			}
 			catch (const std::exception& e)
 			{
@@ -431,9 +427,9 @@ namespace
 	}
 }
 
-OBSE_PLUGIN_LOAD(const OBSE::LoadInterface* a_obse)
+SFSEPluginLoad(const SFSE::LoadInterface* a_sfse)
 {
-	OBSE::Init(a_obse);
-	OBSE::GetMessagingInterface()->RegisterListener(MessageHandler);
+	SFSE::Init(a_sfse);
+	SFSE::GetMessagingInterface()->RegisterListener(MessageHandler);
 	return true;
 }

@@ -2,7 +2,7 @@
 set_xmakever("2.9.4")
 
 -- includes
-includes("lib/commonlibob64")
+includes("lib/commonlibsf")
 
 -- set project
 set_project("BakaRTTIDump")
@@ -24,10 +24,10 @@ add_rules("plugin.vsxmake.autoupdate")
 -- targets
 target("BakaRTTIDump")
     -- bind local dependencies
-    add_deps("commonlibob64")
+    add_deps("commonlibsf")
 
-    -- add commonlibob64 plugin
-    add_rules("commonlibob64.plugin", {
+    -- add commonlibsf plugin
+    add_rules("commonlibsf.plugin", {
         name = "BakaRTTIDump",
         author = "shad0wshayd3"
     })

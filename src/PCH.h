@@ -1,10 +1,8 @@
 ﻿#pragma once
 
-#include "OBSE/OBSE.h"
-#include "RE/Oblivion.h"
-#include "REX/W32/DBGHELP.h"
+#include "RE/Starfield.h"
+#include "SFSE/SFSE.h"
 
-#include <regex>
-#include <unordered_set>
+#include "REX/W32/DBGHELP.h"
 
 using namespace std::literals;
