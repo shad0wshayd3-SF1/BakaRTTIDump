@@ -45,9 +45,9 @@ public:
 private:
 	[[nodiscard]] static const RE::RTTI::TypeDescriptor* type_descriptor(std::string_view a_name)
 	{
-		const auto      mod = REL::Module::GetSingleton();
-		const auto      segment = mod->segment(REL::Segment::data);
-		const std::span haystack{ segment.pointer<const char>(), segment.size() };
+		const auto      mod = REX::FModule::GetExecutingModule();
+		const auto      data = mod.GetSection(".data");
+		const std::span haystack{ data.GetPointer<const char>(), data.GetSize() };
 
 		std::boyer_moore_horspool_searcher searcher(a_name.cbegin(), a_name.cend());
 		const auto [first, last] = searcher(haystack.begin(), haystack.end());
@@ -66,24 +66,23 @@ private:
 	{
 		assert(a_typeDesc != nullptr);
 
-		const auto mod = REL::Module::GetSingleton();
-		const auto typeDesc = reinterpret_cast<std::uintptr_t>(a_typeDesc);
-		const auto rva = static_cast<std::uint32_t>(typeDesc - mod->base());
-
-		const auto segment = mod->segment(REL::Segment::rdata);
-		const auto base = segment.pointer<const std::byte>();
-		const auto start = reinterpret_cast<const std::uint32_t*>(base);
-		const auto end = reinterpret_cast<const std::uint32_t*>(base + segment.size());
+		const auto mod = REX::FModule::GetExecutingModule();
+		const auto data = mod.GetSection(".rdata");
+		const auto base = data.GetPointer<const std::byte>();
+		const auto desc = reinterpret_cast<std::uintptr_t>(a_typeDesc);
+		const auto rva = static_cast<std::uint32_t>(desc - mod.GetBaseAddress());
+		const auto beg = reinterpret_cast<const std::uint32_t*>(base);
+		const auto end = reinterpret_cast<const std::uint32_t*>(base + data.GetSize());
 
 		std::vector<const RE::RTTI::CompleteObjectLocator*> results;
 
-		for (auto iter = start; iter < end; ++iter)
+		for (auto iter = beg; iter < end; ++iter)
 		{
 			if (*iter == rva)
 			{
 				// both base class desc and col can point to the type desc so we check
 				// the next int to see if it can be an rva to decide which type it is
-				if ((iter[1] < segment.offset()) || (segment.offset() + segment.size() <= iter[1]))
+				if ((iter[1] < data.GetOffset()) || (data.GetOffset() + data.GetSize() <= iter[1]))
 				{
 					continue;
 				}
@@ -102,15 +101,15 @@ private:
 		assert(std::all_of(a_cols.begin(), a_cols.end(), [](auto&& a_elem) noexcept
 		                   { return a_elem != nullptr; }));
 
-		const auto mod = REL::Module::GetSingleton();
-		const auto segment = mod->segment(REL::Segment::rdata);
-		const auto base = segment.pointer<const std::byte>();
-		const auto start = reinterpret_cast<const std::uintptr_t*>(base);
-		const auto end = reinterpret_cast<const std::uintptr_t*>(base + segment.size());
+		const auto mod = REX::FModule::GetExecutingModule();
+		const auto data = mod.GetSection(".rdata");
+		const auto base = data.GetPointer<const std::byte>();
+		const auto beg = reinterpret_cast<const std::uintptr_t*>(base);
+		const auto end = reinterpret_cast<const std::uintptr_t*>(base + data.GetSize());
 
 		container_type results;
 
-		for (auto iter = start; iter < end; ++iter)
+		for (auto iter = beg; iter < end; ++iter)
 		{
 			if (std::find_if(
 					a_cols.begin(),
@@ -225,11 +224,11 @@ void dump_rtti()
 	std::vector<std::tuple<std::string, std::uint64_t, std::vector<std::uint64_t>>> results;  // [ demangled name, rtti id, vtable ids ]
 
 	VTable typeInfo(".?AVtype_info@@"sv);
-	const auto mod = REL::Module::GetSingleton();
-	const auto baseAddr = mod->base();
-	const auto data = mod->segment(REL::Segment::data);
-	const auto beg = data.pointer<const std::uintptr_t>();
-	const auto end = reinterpret_cast<const std::uintptr_t*>(data.address() + data.size());
+	const auto mod = REX::FModule::GetExecutingModule();
+	const auto data = mod.GetSection(".data");
+	const auto base = mod.GetBaseAddress();
+	const auto beg = data.GetPointer<const std::uintptr_t>();
+	const auto end = reinterpret_cast<const std::uintptr_t*>(data.GetAddress() + data.GetSize());
 	const auto offset2ID = get_offset2ID();
 
 	for (auto iter = beg; iter < end; ++iter)
@@ -240,7 +239,7 @@ void dump_rtti()
 			try
 			{
 				auto name = decode_name(typeDescriptor);
-				const auto rid = offset2ID->operator()(reinterpret_cast<std::uintptr_t>(iter) - baseAddr);
+				const auto rid = offset2ID->get_id(reinterpret_cast<std::uintptr_t>(iter) - base);
 
 				VTable vtable{ typeDescriptor };
 				std::vector<std::uint64_t> vids(vtable.size());
@@ -249,7 +248,7 @@ void dump_rtti()
 					vtable.end(),
 					vids.begin(),
 					[&](auto&& a_elem)
-					{ return offset2ID->operator()(a_elem.offset()); });
+					{ return offset2ID->get_id(a_elem.offset()); });
 
 				results.emplace_back(sanitize_name(std::move(name)), rid, std::move(vids));
 			}
@@ -312,8 +311,12 @@ void dump_rtti()
 		{
 			file << "\t\tinline constexpr std::array<REL::ID, "sv
 				 << vids.size()
-				 << "> "sv
-				 << name
+				 << "> "sv;
+			if (vids.size() < 100)
+				file << " "sv;
+			if (vids.size() < 10)
+				file << " "sv;
+			file << name
 				 << "{ "sv;
 			printVID(svids.front());
 			for (const auto vid : svids.subspan(1))
@@ -340,11 +343,11 @@ void dump_nirtti()
 		results.insert(REL::ID(seed).address());
 	}
 
-	const auto mod = REL::Module::GetSingleton();
-	const auto base = mod->base();
-	const auto segment = mod->segment(REL::Segment::data);
-	const auto beg = segment.pointer<const std::uintptr_t>();
-	const auto end = reinterpret_cast<const std::uintptr_t*>(segment.address() + segment.size());
+	const auto mod = REX::FModule::GetExecutingModule();
+	const auto data = mod.GetSection(".data");
+	const auto base = mod.GetBaseAddress();
+	const auto beg = data.GetPointer<const std::uintptr_t>();
+	const auto end = reinterpret_cast<const std::uintptr_t*>(data.GetAddress() + data.GetSize());
 	bool found = false;
 	do
 	{
@@ -370,7 +373,7 @@ void dump_nirtti()
 		const auto rtti = reinterpret_cast<const RE::NiRTTI*>(result);
 		try
 		{
-			const auto id = offset2ID->operator()(result - base);
+			const auto id = offset2ID->get_id(result - base);
 			toPrint.emplace_back(sanitize_name(rtti->GetName()), id);
 		}
 		catch (const std::exception&)
