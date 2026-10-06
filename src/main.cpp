@@ -153,7 +153,7 @@ private:
 							   a_name.erase(a_match.first, a_match.second);
 						   } }),
 		std::make_pair(
-			std::regex{ R"regex(([(),:<>]){1})regex"s, std::regex::ECMAScript },
+			std::regex{ R"regex(([(),:<>\[\]]){1})regex"s, std::regex::ECMAScript },
 			std::function{ [](std::string& a_name, const std::ssub_match& a_match)
 		                   {
 							   a_name.replace(a_match.first, a_match.second, "_"sv);
@@ -268,6 +268,21 @@ void dump_rtti()
 			[](auto&& a_lhs, auto&& a_rhs)
 			{
 				return std::get<0>(a_lhs) == std::get<0>(a_rhs);
+			}),
+		results.end());
+
+	constexpr std::array toRemove{
+		static_cast<std::uint64_t>(840820),   // bool
+		static_cast<std::uint64_t>(840903),   // int
+		static_cast<std::uint64_t>(1268914),  // float
+	};
+	results.erase(
+		std::remove_if(
+			results.begin(),
+			results.end(),
+			[&](auto&& a_elem)
+			{
+				return std::find(toRemove.begin(), toRemove.end(), std::get<1>(a_elem)) != toRemove.end();
 			}),
 		results.end());
 
